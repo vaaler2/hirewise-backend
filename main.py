@@ -1,34 +1,27 @@
+import os
+import uuid
+from datetime import datetime, timedelta
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
-import uuid
-import json
-import os
-from datetime import datetime, timedelta
+from typing import List
+import shutil
+from openai import OpenAI
+
+# OpenAI kliens inicializálása (API kulcsot az env-ben kell tárolni)
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
 
-DATA_FILE = "applications.json"
+# Egyszerű memória alapú "adatbázis"
+links_db = {}
+applications_db = {}
 
-# Ha nincs adatfájl, létrehozzuk
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        json.dump({"links": {}, "applications": []}, f)
-
-
-# ----------- SEGÉDFÜGGVÉNYEK -----------
-
-def load_data():
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
-
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-# ----------- MODELL CÉG LINK GENERÁLÁSHOZ -----------
+# --- MODELS ---
 
 class LinkRequest(BaseModel):
     client_id: str
@@ -36,34 +29,27 @@ class LinkRequest(BaseModel):
     email: str
 
 
-# ----------- 1. CÉGES LINK GENERÁLÁS -----------
+# --- ENDPOINTOK ---
 
 @app.post("/generate-link")
-def generate_link(req: LinkRequest):
-    data = load_data()
+def generate_link(data: LinkRequest):
     link_id = str(uuid.uuid4())
-    expiry_date = (datetime.utcnow() + timedelta(days=30)).isoformat()
-
-    data["links"][link_id] = {
-        "client_id": req.client_id,
-        "profession": req.profession,
-        "email": req.email,
-        "expiry": expiry_date
+    links_db[link_id] = {
+        "client_id": data.client_id,
+        "profession": data.profession,
+        "company_email": data.email,
+        "expires_at": datetime.utcnow() + timedelta(days=30)
     }
-
-    save_data(data)
-
+    applications_db[link_id] = []
     return {
         "message": "Link successfully generated",
-        "link": f"https://YOUR_DOMAIN.com/form/{link_id}",
-        "expires_at": expiry_date
+        "link": f"https://YOUR-DOMAIN.com/form/{link_id}",
+        "expires_at": links_db[link_id]["expires_at"]
     }
 
 
-# ----------- 2. JELENTKEZŐ ŰRLAP BEKÜLDÉSE -----------
-
 @app.post("/submit-form/{link_id}")
-async def submit_form(
+def submit_form(
     link_id: str,
     name: str = Form(...),
     phone: str = Form(...),
@@ -71,48 +57,70 @@ async def submit_form(
     about: str = Form(...),
     cv_image: UploadFile = File(...)
 ):
-    data = load_data()
+    if link_id not in links_db:
+        raise HTTPException(status_code=404, detail="Invalid link")
 
-    # Ellenőrzés: létezik a link és nem járt le
-    if link_id not in data["links"]:
-        raise HTTPException(status_code=404, detail="Invalid form link")
+    # Mentés
+    file_ext = cv_image.filename.split(".")[-1]
+    file_name = f"{uuid.uuid4()}.{file_ext}"
+    file_path = os.path.join(UPLOAD_DIR, file_name)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(cv_image.file, buffer)
 
-    link_info = data["links"][link_id]
-    if datetime.fromisoformat(link_info["expiry"]) < datetime.utcnow():
-        raise HTTPException(status_code=400, detail="Form link has expired")
-
-    # Kép mentése
-    uploads_dir = "uploads"
-    os.makedirs(uploads_dir, exist_ok=True)
-    file_path = os.path.join(uploads_dir, f"{uuid.uuid4()}_{cv_image.filename}")
-
-    with open(file_path, "wb") as f:
-        f.write(await cv_image.read())
-
-    # Jelentkező adatainak mentése
-    application = {
-        "link_id": link_id,
-        "client_id": link_info["client_id"],
-        "profession": link_info["profession"],
-        "company_email": link_info["email"],
+    # Jelentkező mentése
+    applications_db[link_id].append({
         "name": name,
         "phone": phone,
         "email": email,
         "about": about,
         "cv_image_path": file_path,
-        "submitted_at": datetime.utcnow().isoformat()
-    }
-
-    data["applications"].append(application)
-    save_data(data)
+        "submitted_at": datetime.utcnow()
+    })
 
     return {"message": "Application submitted successfully"}
 
 
-# ----------- 3. CÉG LEKÉRDEZHETI A JELENTKEZÉSEKET -----------
-
 @app.get("/applications/{link_id}")
 def get_applications(link_id: str):
-    data = load_data()
-    apps = [app for app in data["applications"] if app["link_id"] == link_id]
-    return JSONResponse(content=apps)
+    if link_id not in applications_db:
+        raise HTTPException(status_code=404, detail="Invalid link")
+
+    applications = applications_db[link_id]
+
+    if not applications:
+        return {"applications": [], "evaluation": "No applications yet"}
+
+    # AI értékelés
+    prompt = "Értékeld az alábbi jelentkezőket a megadott szakma alapján, adj 1-10 pontszámot mindenkinek:\n\n"
+    profession = links_db[link_id]["profession"]
+    for idx, app in enumerate(applications, start=1):
+        prompt += (
+            f"Jelentkező {idx}:\n"
+            f"Név: {app['name']}\n"
+            f"Telefon: {app['phone']}\n"
+            f"E-mail: {app['email']}\n"
+            f"Leírás: {app['about']}\n"
+            f"Szakma: {profession}\n\n"
+        )
+
+    try:
+        ai_response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Te egy HR szakértő vagy, aki értékeli a jelentkezőket."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3
+        )
+        evaluation = ai_response.choices[0].message.content.strip()
+    except Exception as e:
+        evaluation = f"AI értékelési hiba: {str(e)}"
+
+    return {
+        "link_id": link_id,
+        "client_id": links_db[link_id]["client_id"],
+        "profession": profession,
+        "company_email": links_db[link_id]["company_email"],
+        "applications": applications,
+        "evaluation": evaluation
+    }
