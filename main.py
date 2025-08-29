@@ -196,3 +196,19 @@ def get_applications(link_id: str):
             "applications": apps,
             "evaluation": evaluation,
         }
+from fastapi import Request, HTTPException
+import os
+
+CRON_BEARER = os.getenv("CRON_BEARER", "")
+
+def require_cron_bearer(req: Request):
+    auth = req.headers.get("Authorization", "")
+    if not CRON_BEARER or auth != f"Bearer {CRON_BEARER}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+@app.post("/tasks/send_weekly_reports")
+async def send_weekly_reports(request: Request):
+    require_cron_bearer(request)
+    # --- ide jön majd az igazi heti email riport logika ---
+    print(">>> Weekly report task triggered!")
+    return {"ok": True, "sent": 0}
