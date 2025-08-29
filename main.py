@@ -202,8 +202,11 @@ import os
 CRON_BEARER = os.getenv("CRON_BEARER", "")
 
 def require_cron_bearer(req: Request):
-    auth = req.headers.get("Authorization", "")
-    if not CRON_BEARER or auth != f"Bearer {CRON_BEARER}":
+    auth = req.headers.get("Authorization", "").strip()
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()  # levágja a "Bearer " részt és a felesleges szóközöket
+    if not CRON_BEARER or token != CRON_BEARER.strip():
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 @app.post("/tasks/send_weekly_reports")
