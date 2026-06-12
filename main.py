@@ -1,4 +1,5 @@
 import os
+import resend
 import uuid
 import shutil
 from datetime import datetime, timedelta
@@ -258,8 +259,64 @@ def get_applications(link_id: str):
             "evaluation": evaluation,
         }
 
+# A Resend kulcs beállítása a környezeti változókból
+resend.api_key = os.getenv("RESEND_API_KEY")
+
 @app.post("/tasks/send_weekly_reports")
-async def send_weekly_reports(request: Request):
+def send_weekly_reports(request: Request):
     require_cron_bearer(request)
-    print(">>> Weekly report task triggered!")
-    return {"ok": True, "sent": 0}
+    
+    db = SessionLocal()
+    # Lekérjük az összes élő linket az adatbázisból
+    links = db.query(Link).all()
+    
+    sent_count = 0
+    for link in links:
+        # Megkeressük az adott linkhez tartozó jelentkezőket
+        apps = db.query(Application).filter(Application.link_id == link.link_id).all()
+        
+        if not apps:
+            continue  # Ha nincs jelentkező, nem küldünk üres e-mailt a cégnek
+            
+        # Összeállítjuk a szép HTML e-mail tartalmát
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; color: #333;">
+            <h2 style="color: #2563eb;">Heti HireWise Riport</h2>
+            <p>Itt vannak a legújabb jelentkezők a <b>{link.profession}</b> pozícióra:</p>
+            <table border="1" cellpadding="10" cellspacing="0" style="border-collapse: collapse; width: 100%;">
+                <tr style="background-color: #f3f4f6;">
+                    <th>Név</th>
+                    <th>E-mail</th>
+                    <th>Telefon</th>
+                </tr>
+        """
+        
+        for a in apps:
+            html_content += f"""
+                <tr>
+                    <td>{a.name}</td>
+                    <td>{a.email}</td>
+                    <td>{a.phone}</td>
+                </tr>
+            """
+            
+        html_content += """
+            </table>
+            <p style="margin-top: 20px;">Üdvözlettel,<br>A HireWise AI Asszisztense</p>
+        </div>
+        """
+        
+        try:
+            # E-mail kiküldése a Resend API-val
+            resend.Emails.send({
+                "from": "onboarding@resend.dev",
+                "to": link.company_email,  # Teszt fázisban ez csak a Te e-mail címed lehet!
+                "subject": f"Heti Jelölt Riport: {link.profession}",
+                "html": html_content
+            })
+            sent_count += 1
+        except Exception as e:
+            print(f"Hiba történt a {link.company_email} címre küldéskor: {e}")
+            
+    db.close()
+    return {"ok": True, "sent_emails": sent_count}
