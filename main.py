@@ -151,13 +151,17 @@ def generate_link(data: LinkRequest):
     )
     db.add(new_link)
     db.commit()
+    
+    # Kimentjük a dátumot szövegként, MIELŐTT bezárjuk a kapcsolatot!
+    expires_str = new_link.expires_at.isoformat() 
+    
     db.close()
 
     return {
         "message": "Link successfully generated",
         "link": f"https://YOUR-DOMAIN.com/form/{link_id}",
         "link_id": link_id,
-        "expires_at": new_link.expires_at.isoformat(),
+        "expires_at": expires_str,
     }
 
 
