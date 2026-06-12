@@ -3,3 +3,4 @@ uvicorn
 reportlab
 python-multipart
 openai
+psycopg2-binary
