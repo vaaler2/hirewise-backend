@@ -4,3 +4,4 @@ reportlab
 python-multipart
 openai
 psycopg2-binary
+sqlalchemy
