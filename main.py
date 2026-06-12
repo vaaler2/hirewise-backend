@@ -4,25 +4,58 @@ import shutil
 from datetime import datetime, timedelta
 from typing import List
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-# --- OpenAI kliens (env-ben legyen: OPENAI_API_KEY) ---
+# --- ADATBÁZIS BEÁLLÍTÁSOK (SQLAlchemy) ---
+from sqlalchemy import create_engine, Column, String, DateTime, Text
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+# A Neon linket a Render Env-ből olvassuk ki (ha nincs, egy helyi sqlite-ot próbál)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./hirewise.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# --- ADATBÁZIS TÁBLÁK (MODELEK) ---
+class Link(Base):
+    __tablename__ = "links"
+    link_id = Column(String, primary_key=True, index=True)
+    client_id = Column(String)
+    profession = Column(String)
+    company_email = Column(String)
+    expires_at = Column(DateTime)
+
+class Application(Base):
+    __tablename__ = "applications"
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    link_id = Column(String, index=True)
+    name = Column(String)
+    phone = Column(String)
+    email = Column(String)
+    about = Column(Text)
+    cv_image_path = Column(String)
+    submitted_at = Column(DateTime)
+
+# Táblák létrehozása (ha még nincsenek meg)
+Base.metadata.create_all(bind=engine)
+
+# --- OpenAI kliens ---
 try:
     from openai import OpenAI
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 except Exception:
-    openai_client = None  # ha nincs telepítve / nincs kulcs, fallbackot használunk
+    openai_client = None
 
 app = FastAPI(title="Hirewise backend")
 
-# "Adatbázis" memóriában (demó)
-links_db = {}          # link_id -> { client_id, profession, company_email, expires_at }
-applications_db = {}   # link_id -> [ {name, phone, email, about, cv_image_path, submitted_at, score?, rank?} ]
-
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+CRON_BEARER = os.getenv("CRON_BEARER", "")
 
 
 # ---------- MODELS ----------
@@ -33,35 +66,41 @@ class LinkRequest(BaseModel):
 
 
 # ---------- SEGÉDFÜGGVÉNYEK ----------
-def _local_score(app: dict, profession: str) -> float:
-    """
-    Egyszerű, offline pontozó, ha az AI nem érhető el.
-    0–100-as skála.
-    """
-    text = (app.get("about") or "").lower()
-    name_ok = 1 if app.get("name") else 0
-    phone_ok = 1 if app.get("phone") else 0
-    email_ok = 1 if app.get("email") else 0
-    len_bonus = min(len(text) / 400, 1)  # max +1, hosszabb bemutatkozás = kis bónusz
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def require_cron_bearer(req: Request):
+    auth = req.headers.get("Authorization", "").strip()
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+    if not CRON_BEARER or token != CRON_BEARER.strip():
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+def _local_score(app_dict: dict, profession: str) -> float:
+    text = (app_dict.get("about") or "").lower()
+    name_ok = 1 if app_dict.get("name") else 0
+    phone_ok = 1 if app_dict.get("phone") else 0
+    email_ok = 1 if app_dict.get("email") else 0
+    len_bonus = min(len(text) / 400, 1)
     prof_hit = 1 if profession.lower() in text else 0
 
-    # nagyon egyszerű kulcsszavas példák
     kw = {
         "asztalos": ["fa", "bútor", "marás", "csiszolás", "gépek"],
         "software developer": ["python", "java", "react", "docker", "api"],
     }
     kws = kw.get(profession.lower(), [])
     kw_hits = sum(1 for k in kws if k in text)
-    kw_score = min(kw_hits / 3, 1)  # max +1
+    kw_score = min(kw_hits / 3, 1)
 
     raw = 2 * prof_hit + 2 * kw_score + 1.5 * len_bonus + name_ok + phone_ok + email_ok
-    return round(100 * raw / 7.5, 1)  # skálázás 0–100-ig
-
+    return round(100 * raw / 7.5, 1)
 
 def _ai_evaluate(applications: List[dict], profession: str) -> str:
-    """
-    Szöveges AI-értékelés GPT-vel. Ha nincs kliens/kulcs, hibát dobunk, amit kívül elkapunk.
-    """
     if openai_client is None:
         raise RuntimeError("OpenAI kliens nem elérhető")
 
@@ -71,13 +110,13 @@ def _ai_evaluate(applications: List[dict], profession: str) -> str:
         "A válasz végén adj egy javasolt sorrendet is.\n\n"
         f"Szakma: {profession}\n\n"
     )
-    for i, app in enumerate(applications, 1):
+    for i, app_data in enumerate(applications, 1):
         prompt += (
             f"Jelentkező {i}:\n"
-            f"- Név: {app.get('name','')}\n"
-            f"- Telefon: {app.get('phone','')}\n"
-            f"- E-mail: {app.get('email','')}\n"
-            f"- Bemutatkozás: {app.get('about','')}\n\n"
+            f"- Név: {app_data.get('name','')}\n"
+            f"- Telefon: {app_data.get('phone','')}\n"
+            f"- E-mail: {app_data.get('email','')}\n"
+            f"- Bemutatkozás: {app_data.get('about','')}\n\n"
         )
 
     resp = openai_client.chat.completions.create(
@@ -99,20 +138,25 @@ def health():
 
 @app.post("/generate-link")
 def generate_link(data: LinkRequest):
+    db = SessionLocal()
     link_id = str(uuid.uuid4())
-    links_db[link_id] = {
-        "client_id": data.client_id,
-        "profession": data.profession,
-        "company_email": data.email,
-        "expires_at": datetime.utcnow() + timedelta(days=30),
-    }
-    applications_db[link_id] = []
+    
+    new_link = Link(
+        link_id=link_id,
+        client_id=data.client_id,
+        profession=data.profession,
+        company_email=data.email,
+        expires_at=datetime.utcnow() + timedelta(days=30)
+    )
+    db.add(new_link)
+    db.commit()
+    db.close()
 
     return {
         "message": "Link successfully generated",
-        "link": f"https://YOUR-DOMAIN.com/form/{link_id}",  # ide majd a frontend URL megy
+        "link": f"https://YOUR-DOMAIN.com/form/{link_id}",
         "link_id": link_id,
-        "expires_at": links_db[link_id]["expires_at"].isoformat(),
+        "expires_at": new_link.expires_at.isoformat(),
     }
 
 
@@ -123,95 +167,99 @@ def submit_form(
     phone: str = Form(...),
     email: str = Form(...),
     about: str = Form(...),
-    cv_image: UploadFile = File(...),
+    cv_image: UploadFile = File(...)
 ):
-    if link_id not in links_db:
+    db = SessionLocal()
+    link_record = db.query(Link).filter(Link.link_id == link_id).first()
+    if not link_record:
+        db.close()
         raise HTTPException(status_code=404, detail="Invalid link")
 
-    # fájl mentés
     ext = (cv_image.filename or "bin").split(".")[-1]
     file_name = f"{uuid.uuid4()}.{ext}"
     file_path = os.path.join(UPLOAD_DIR, file_name)
     with open(file_path, "wb") as f:
         shutil.copyfileobj(cv_image.file, f)
 
-    applications_db[link_id].append(
-        {
-            "name": name,
-            "phone": phone,
-            "email": email,
-            "about": about,
-            "cv_image_path": file_path,
-            "submitted_at": datetime.utcnow().isoformat(),
-        }
+    new_app = Application(
+        link_id=link_id,
+        name=name,
+        phone=phone,
+        email=email,
+        about=about,
+        cv_image_path=file_path,
+        submitted_at=datetime.utcnow()
     )
+    db.add(new_app)
+    db.commit()
+    db.close()
+
     return {"message": "Application submitted successfully"}
 
 
 @app.get("/applications/{link_id}")
 def get_applications(link_id: str):
-    if link_id not in applications_db:
+    db = SessionLocal()
+    link_record = db.query(Link).filter(Link.link_id == link_id).first()
+    if not link_record:
+        db.close()
         raise HTTPException(status_code=404, detail="Invalid link")
 
-    profession = links_db[link_id]["profession"]
-    apps = applications_db[link_id]
+    app_records = db.query(Application).filter(Application.link_id == link_id).all()
+    profession = link_record.profession
+    
+    apps_list = []
+    for a in app_records:
+        apps_list.append({
+            "name": a.name,
+            "phone": a.phone,
+            "email": a.email,
+            "about": a.about,
+            "cv_image_path": a.cv_image_path,
+            "submitted_at": a.submitted_at.isoformat()
+        })
+    
+    db.close()
 
-    if not apps:
+    if not apps_list:
         return {
             "link_id": link_id,
-            "client_id": links_db[link_id]["client_id"],
+            "client_id": link_record.client_id,
             "profession": profession,
-            "company_email": links_db[link_id]["company_email"],
+            "company_email": link_record.company_email,
             "applications": [],
             "evaluation": "No applications yet",
         }
 
-    # 1) AI értékelés megkísérlése
-    evaluation: str
     try:
-        evaluation = _ai_evaluate(apps, profession)
-        # AI esetén NEM módosítjuk a listát, csak szöveges értékelést adunk vissza
+        evaluation = _ai_evaluate(apps_list, profession)
         return {
             "link_id": link_id,
-            "client_id": links_db[link_id]["client_id"],
+            "client_id": link_record.client_id,
             "profession": profession,
-            "company_email": links_db[link_id]["company_email"],
-            "applications": apps,
+            "company_email": link_record.company_email,
+            "applications": apps_list,
             "evaluation": evaluation,
         }
     except Exception as e:
-        # 2) Fallback: helyi pontozás + rangsor
-        for a in apps:
+        for a in apps_list:
             a["score"] = _local_score(a, profession)
-        apps.sort(key=lambda x: x.get("score", 0), reverse=True)
-        for i, a in enumerate(apps, 1):
+        apps_list.sort(key=lambda x: x.get("score", 0), reverse=True)
+        for i, a in enumerate(apps_list, 1):
             a["rank"] = i
         evaluation = f"AI értékelés nem elérhető ({e}); helyi pontozás és rangsor látható."
 
         return {
             "link_id": link_id,
-            "client_id": links_db[link_id]["client_id"],
+            "client_id": link_record.client_id,
             "profession": profession,
-            "company_email": links_db[link_id]["company_email"],
-            "applications": apps,
+            "company_email": link_record.company_email,
+            "applications": apps_list,
             "evaluation": evaluation,
         }
-from fastapi import Request, HTTPException
-import os
-
-CRON_BEARER = os.getenv("CRON_BEARER", "")
-
-def require_cron_bearer(req: Request):
-    auth = req.headers.get("Authorization", "").strip()
-    token = ""
-    if auth.lower().startswith("bearer "):
-        token = auth[7:].strip()  # levágja a "Bearer " részt és a felesleges szóközöket
-    if not CRON_BEARER or token != CRON_BEARER.strip():
-        raise HTTPException(status_code=401, detail="Unauthorized")
 
 @app.post("/tasks/send_weekly_reports")
 async def send_weekly_reports(request: Request):
     require_cron_bearer(request)
-    # --- ide jön majd az igazi heti email riport logika ---
     print(">>> Weekly report task triggered!")
     return {"ok": True, "sent": 0}
