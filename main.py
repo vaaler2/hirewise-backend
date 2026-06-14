@@ -102,16 +102,19 @@ def _local_score(app_dict: dict, profession: str) -> float:
     raw = 2 * prof_hit + 2 * kw_score + 1.5 * len_bonus + name_ok + phone_ok + email_ok
     return round(100 * raw / 7.5, 1)
 
-def _ai_evaluate(applications: List[dict], profession: str) -> str:
+def _ai_evaluate(applications: List[dict], profession: str):
     if openai_client is None:
         raise RuntimeError("OpenAI kliens nem elérhető")
 
+    # Itt utasítjuk az AI-t a szigorú JSON formátumra
     prompt = (
         "Értékeld az alábbi jelentkezőket a megadott szakma alapján. "
-        "Adj mindenkinek 1–10 pontszámot és rövid indoklást. "
-        "A válasz végén adj egy javasolt sorrendet is.\n\n"
+        "KIZÁRÓLAG érvényes JSON formátumban válaszolj! "
+        "A JSON egy 'results' nevű listát tartalmazzon, amiben minden jelentkezőnek van egy objektuma a következő kulcsokkal: "
+        "'nev' (a jelentkező neve), 'pontszam' (1-10 közötti szám), 'indoklas' (rövid szöveges értékelés).\n\n"
         f"Szakma: {profession}\n\n"
     )
+    
     for i, app_data in enumerate(applications, 1):
         prompt += (
             f"Jelentkező {i}:\n"
@@ -123,13 +126,18 @@ def _ai_evaluate(applications: List[dict], profession: str) -> str:
 
     resp = openai_client.chat.completions.create(
         model="gpt-4o-mini",
+        response_format={ "type": "json_object" }, # <--- ETTŐL LESZ JSON MÓD!
         messages=[
-            {"role": "system", "content": "Te egy HR szakértő vagy, aki jelentkezőket értékel."},
+            {"role": "system", "content": "Te egy profi HR asszisztens vagy."},
             {"role": "user", "content": prompt},
         ],
         temperature=0.3,
     )
-    return resp.choices[0].message.content.strip()
+    
+    # Itt alakítjuk át a szöveget igazi Python adatszerkezetté!
+    import json
+    result_text = resp.choices[0].message.content
+    return json.loads(result_text)
 
 
 # ---------- ENDPOINTOK ----------
