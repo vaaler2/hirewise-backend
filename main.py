@@ -142,9 +142,16 @@ def _ai_evaluate(applications: List[dict], profession: str):
     )
     
     # Itt alakítjuk át a szöveget igazi Python adatszerkezetté!
+    # Itt alakítjuk át a szöveget igazi Python adatszerkezetté!
     import json
     result_text = resp.choices[0].message.content
-    return json.loads(result_text)
+    result_data = json.loads(result_text)
+    
+    # RANGSOROLÁS: A Python sorba rendezi a listát pontszám alapján (legjobb elöl)
+    if "results" in result_data:
+        result_data["results"].sort(key=lambda x: x.get("pontszam", 0), reverse=True)
+        
+    return result_data
 
 
 # ---------- ENDPOINTOK ----------
