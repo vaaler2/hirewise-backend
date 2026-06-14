@@ -3,6 +3,8 @@ import resend
 import uuid
 import json
 import io
+import base64
+from openai import OpenAI
 from pypdf import PdfReader
 import shutil
 from datetime import datetime, timedelta
