@@ -343,7 +343,7 @@ def send_weekly_reports(request: Request):
     require_cron_bearer(request)
     
     db = SessionLocal()
-    # Lekérjük az összes élő linket az adatbázisból
+    # Lekérjük az összes élő pozíció linket az adatbázisból
     links = db.query(Link).all()
     
     sent_count = 0
@@ -352,33 +352,85 @@ def send_weekly_reports(request: Request):
         apps = db.query(Application).filter(Application.link_id == link.link_id).all()
         
         if not apps:
-            continue  # Ha nincs jelentkező, nem küldünk üres e-mailt a cégnek
+            continue  # Ha nincs jelentkező, nem küldünk üres e-mailt
             
-        # Összeállítjuk a szép HTML e-mail tartalmát
+        # Átalakítjuk a jelentkezőket olyan listává, amit az AI függvényünk vár
+        apps_list = []
+        for a in apps:
+            apps_list.append({
+                "name": a.name,
+                "phone": a.phone,
+                "email": a.email,
+                "about": a.about
+            })
+            
+        try:
+            # Megkérjük az AI-t, hogy pontozza és RANGSOROLJA a listát
+            ai_data = _ai_evaluate(apps_list, link.profession)
+            results = ai_data.get("results", [])
+        except Exception as e:
+            print(f"Hiba az e-mail AI értékelésnél: {e}")
+            results = []
+
+        # Összeállítjuk a szép, rangsorolt HTML e-mail tartalmát
         html_content = f"""
-        <div style="font-family: Arial, sans-serif; color: #333;">
-            <h2 style="color: #2563eb;">Heti HireWise Riport</h2>
-            <p>Itt vannak a legújabb jelentkezők a <b>{link.profession}</b> pozícióra:</p>
-            <table border="1" cellpadding="10" cellspacing="0" style="border-collapse: collapse; width: 100%;">
-                <tr style="background-color: #f3f4f6;">
-                    <th>Név</th>
-                    <th>E-mail</th>
-                    <th>Telefon</th>
+        <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">HireWise AI – Heti Jelölt Riport</h2>
+            <p>Itt vannak a legújabb jelentkezők a(z) <b style="color: #2563eb;">{link.profession}</b> pozícióra, alkalmassági sorrendben:</p>
+            
+            <table border="0" cellpadding="10" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                <tr style="background-color: #2563eb; color: white; text-align: left;">
+                    <th style="border-top-left-radius: 4px; border-bottom-left-radius: 4px;">Psz.</th>
+                    <th>Név / Elérhetőség</th>
+                    <th style="border-top-right-radius: 4px; border-bottom-right-radius: 4px;">AI Értékelés / Indoklás</th>
                 </tr>
         """
         
-        for a in apps:
-            html_content += f"""
-                <tr>
-                    <td>{a.name}</td>
-                    <td>{a.email}</td>
-                    <td>{a.phone}</td>
+        # Ha az AI-tól kaptunk sikeres eredményt, abból építjük fel a táblázatot
+        if results:
+            for res in results:
+                nev = res.get("nev", "Ismeretlen")
+                pontszam = res.get("pontszam", 0)
+                indoklas = res.get("indoklas", "")
+                
+                # Megkeressük az eredeti adatokat (telefonszám, email) a név alapján
+                orig_app = next((x for x in apps_list if x["name"].lower() == nev.lower()), {})
+                tel = orig_app.get("phone", "-")
+                email = orig_app.get("email", "-")
+                
+                # Pontszám színe (zöld ha jó, piros ha gyenge)
+                score_color = "#10b981" if pontszam >= 7 else ("#f59e0b" if pontszam >= 5 else "#ef4444")
+                
+                html_content += f"""
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                    <td style="font-size: 20px; font-weight: bold; color: {score_color}; text-align: center; width: 50px;">
+                        {pontszam}
+                    </td>
+                    <td style="font-size: 14px; width: 180px;">
+                        <b>{nev}</b><br>
+                        <span style="color: #6b7280; font-size: 12px;">{email}<br>{tel}</span>
+                    </td>
+                    <td style="font-size: 13px; color: #4b5563; line-height: 1.4;">
+                        {indoklas}
+                    </td>
                 </tr>
-            """
+                """
+        else:
+            # Biztonsági játék: ha az AI épp nem elérhető, a sima listát küldjük ki pontok nélkül
+            for a in apps_list:
+                html_content += f"""
+                <tr style="border-bottom: 1px solid #e5e7eb;">
+                    <td style="text-align: center; color: #9ca3af;">-</td>
+                    <td style="font-size: 14px;"><b>{a['name']}</b><br><span style="color: #6b7280; font-size: 12px;">{a['email']}</span></td>
+                    <td style="font-size: 13px; color: #9ca3af;">Az AI értékelés jelenleg nem elérhető.</td>
+                </tr>
+                """
             
         html_content += """
             </table>
-            <p style="margin-top: 20px;">Üdvözlettel,<br>A HireWise AI Asszisztense</p>
+            <p style="margin-top: 30px; font-size: 12px; color: #9ca3af; text-align: center; border-top: 1px solid #e5e7eb; padding-top: 15px;">
+                Ezt a levelet a HireWise AI asszisztense generálta automatikusan.
+            </p>
         </div>
         """
         
@@ -386,8 +438,8 @@ def send_weekly_reports(request: Request):
             # E-mail kiküldése a Resend API-val
             resend.Emails.send({
                 "from": "onboarding@resend.dev",
-                "to": link.company_email,  # Teszt fázisban ez csak a Te e-mail címed lehet!
-                "subject": f"Heti Jelölt Riport: {link.profession}",
+                "to": link.company_email,  # Teszt fázisban ez a Te e-mail címed lesz
+                "subject": f"🔥 AI Rangsorolt Jelölt Riport: {link.profession}",
                 "html": html_content
             })
             sent_count += 1
