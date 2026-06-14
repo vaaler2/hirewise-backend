@@ -110,9 +110,7 @@ def _ai_evaluate(applications: List[dict], profession: str):
     if openai_client is None:
         raise RuntimeError("OpenAI kliens nem elérhető")
 
-    # Itt utasítjuk az AI-t a szigorú JSON formátumra
-    prompt = (
-        # Itt utasítjuk az AI-t a szigorú JSON formátumra és a kíméletlen pontozásra
+    # Itt utasítjuk az AI-t a szigorú JSON formátumra és a kíméletlen pontozásra
     prompt = (
         "Értékeld az alábbi jelentkezőket a megadott szakma alapján. "
         "FIGYELEM: Légy rendkívül szigorú! Ha a jelentkező önéletrajzában vagy bemutatkozásában nincs a megadott pozícióhoz szorosan kapcsolódó konkrét szakmai tapasztalat, tanulmány vagy szoftveres/technikai ismeret, adj maximum 1 vagy 2 pontot, függetlenül attól, hogy más területen milyen jó vagy szorgalmas munkaerő. "
