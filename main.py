@@ -205,7 +205,7 @@ def submit_form(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # PDF szöveg kinyerése (ha PDF-et töltöttek fel)
+    # PDF és Kép szöveg kinyerése
     cv_text = ""
     if ext == "pdf":
         try:
@@ -216,11 +216,38 @@ def submit_form(
                     cv_text += extracted + "\n"
         except Exception as e:
             print(f"PDF olvasási hiba: {e}")
+            
+    elif ext in ["jpg", "jpeg", "png"]:
+        try:
+            # A képet átalakítjuk Base64 szöveggé
+            import base64
+            from openai import OpenAI
+            
+            base64_image = base64.b64encode(content).decode('utf-8')
+            mime_type = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
+            
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Kérlek olvasd el ezt az önéletrajzot/dokumentumot és másold ki a benne lévő teljes szöveget. Ne fűzz hozzá semmilyen megjegyzést, csak a kinyert szöveget add vissza!"},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}}
+                        ]
+                    }
+                ],
+                max_tokens=1000
+            )
+            cv_text = response.choices[0].message.content
+        except Exception as e:
+            print(f"Kép AI olvasási hiba: {e}")
 
-    # Ha találtunk szöveget a PDF-ben, hozzáfűzzük a rövid bemutatkozáshoz
+    # Ha találtunk szöveget (akár PDF, akár JPG), hozzáfűzzük a rövid bemutatkozáshoz
     final_about = about
-    if cv_text.strip():
-        final_about += f"\n\n--- ÖNÉLETRAJZ (PDF) TARTALMA ---\n{cv_text.strip()}"
+    if cv_text and cv_text.strip():
+        final_about += f"\n\n--- DOKUMENTUM TARTALMA ---\n{cv_text.strip()}"
 
     # Adatok mentése az adatbázisba az új, kibővített szöveggel
     new_app = Application(
