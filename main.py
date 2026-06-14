@@ -191,18 +191,42 @@ def submit_form(
         db.close()
         raise HTTPException(status_code=404, detail="Invalid link")
 
-    ext = (cv_image.filename or "bin").split(".")[-1]
+    # Fájl kiterjesztésének lekérése (pl. 'pdf', 'jpg')
+    ext = (cv_image.filename or "bin").split(".")[-1].lower()
     file_name = f"{uuid.uuid4()}.{ext}"
     file_path = os.path.join(UPLOAD_DIR, file_name)
+    
+    # Fájl tartalmának beolvasása a memóriába
+    content = cv_image.file.read()
+    
+    # Fájl elmentése a szerverre
     with open(file_path, "wb") as f:
-        shutil.copyfileobj(cv_image.file, f)
+        f.write(content)
 
+    # PDF szöveg kinyerése (ha PDF-et töltöttek fel)
+    cv_text = ""
+    if ext == "pdf":
+        try:
+            reader = PdfReader(io.BytesIO(content))
+            for page in reader.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    cv_text += extracted + "\n"
+        except Exception as e:
+            print(f"PDF olvasási hiba: {e}")
+
+    # Ha találtunk szöveget a PDF-ben, hozzáfűzzük a rövid bemutatkozáshoz
+    final_about = about
+    if cv_text.strip():
+        final_about += f"\n\n--- ÖNÉLETRAJZ (PDF) TARTALMA ---\n{cv_text.strip()}"
+
+    # Adatok mentése az adatbázisba az új, kibővített szöveggel
     new_app = Application(
         link_id=link_id,
         name=name,
         phone=phone,
         email=email,
-        about=about,
+        about=final_about,
         cv_image_path=file_path,
         submitted_at=datetime.utcnow()
     )
