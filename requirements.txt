@@ -6,3 +6,4 @@ openai
 psycopg2-binary
 sqlalchemy
 resend
+pydf
