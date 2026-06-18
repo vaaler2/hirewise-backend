@@ -76,11 +76,11 @@ CRON_BEARER = os.getenv("CRON_BEARER", "")
 # ---------- MODELS ----------
 
    # Ezt a struktúrát várjuk a weblaptól
-   class LinkRequest(BaseModel):
-       position_name: str
-       riport_gyakorisag: str = "Hetente"
-       rejtett_leiras: Optional[str] = ""
-       extra_kerdesek: Optional[List[str]] = []
+class LinkRequest(BaseModel):
+    position_name: str
+    riport_gyakorisag: str = "Hetente"
+    rejtett_leiras: Optional[str] = ""
+    extra_kerdesek: Optional[List[str]] = []
 
 # ---------- SEGÉDFÜGGVÉNYEK ----------
 def get_db():
