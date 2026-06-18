@@ -12,6 +12,7 @@ from typing import List
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --- ADATBÁZIS BEÁLLÍTÁSOK (SQLAlchemy) ---
@@ -58,6 +59,14 @@ except Exception:
     openai_client = None
 
 app = FastAPI(title="Hirewise backend")
+# CORS engedélyezése, hogy a weboldalunk tudjon beszélni a szerverrel
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Fejlesztés alatt mindent átengedünk, később ide írjuk a weblapod címét
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
