@@ -63,7 +63,7 @@ app = FastAPI(title="Hirewise backend")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Fejlesztés alatt mindent átengedünk, később ide írjuk a weblapod címét
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
