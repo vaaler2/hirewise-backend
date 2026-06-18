@@ -33,9 +33,12 @@ class Link(Base):
     __tablename__ = "links"
     link_id = Column(String, primary_key=True, index=True)
     client_id = Column(String)
-    profession = Column(String)
+    profession = Column(String)  # Ide mentjük be a weblapról érkező 'position_name'-et
     company_email = Column(String)
     expires_at = Column(DateTime)
+    riport_gyakorisag = Column(String)
+    rejtett_leiras = Column(Text)
+    extra_kerdesek = Column(Text)
 
 class Application(Base):
     __tablename__ = "applications"
@@ -174,21 +177,23 @@ def generate_link(data: LinkRequest):
     import uuid
     link_id = str(uuid.uuid4())[:8] # Generálunk egy 8 karakteres azonosítót
 
-    # Csatlakozás a Neon adatbázishoz
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    # A kérdések listáját szöveggé (JSON string) alakítjuk a mentéshez
-    kerdesek_json = json.dumps(data.extra_kerdesek)
-
-    cur.execute("""
-        INSERT INTO links (link_id, position_name, riport_gyakorisag, rejtett_leiras, extra_kerdesek)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (link_id, data.position_name, data.riport_gyakorisag, data.rejtett_leiras, kerdesek_json))
-
-    conn.commit()
-    cur.close()
-    conn.close()
+    db = SessionLocal()
+    try:
+        # Létrehozzuk az új sort az adatbázisban a megfelelő oszlopokkal
+        new_link = Link(
+            link_id=link_id,
+            profession=data.position_name,  
+            riport_gyakorisag=data.riport_gyakorisag,
+            rejtett_leiras=data.rejtett_leiras,
+            extra_kerdesek=json.dumps(data.extra_kerdesek)
+        )
+        db.add(new_link)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Adatbázis mentési hiba: {str(e)}")
+    finally:
+        db.close()
 
     # Visszaküldjük a weblapnak a sikeres linket!
     return {
