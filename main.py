@@ -74,7 +74,7 @@ CRON_BEARER = os.getenv("CRON_BEARER", "")
 
 
 # ---------- MODELS ----------
-```python
+
    # Ezt a struktúrát várjuk a weblaptól
    class LinkRequest(BaseModel):
        position_name: str
