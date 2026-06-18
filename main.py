@@ -74,11 +74,13 @@ CRON_BEARER = os.getenv("CRON_BEARER", "")
 
 
 # ---------- MODELS ----------
-class LinkRequest(BaseModel):
-    client_id: str
-    profession: str
-    email: str
-
+```python
+   # Ezt a struktúrát várjuk a weblaptól
+   class LinkRequest(BaseModel):
+       position_name: str
+       riport_gyakorisag: str = "Hetente"
+       rejtett_leiras: Optional[str] = ""
+       extra_kerdesek: Optional[List[str]] = []
 
 # ---------- SEGÉDFÜGGVÉNYEK ----------
 def get_db():
@@ -169,31 +171,31 @@ def health():
 
 @app.post("/generate-link")
 def generate_link(data: LinkRequest):
-    db = SessionLocal()
-    link_id = str(uuid.uuid4())
-    
-    new_link = Link(
-        link_id=link_id,
-        client_id=data.client_id,
-        profession=data.profession,
-        company_email=data.email,
-        expires_at=datetime.utcnow() + timedelta(days=30)
-    )
-    db.add(new_link)
-    db.commit()
-    
-    # Kimentjük a dátumot szövegként, MIELŐTT bezárjuk a kapcsolatot!
-    expires_str = new_link.expires_at.isoformat() 
-    
-    db.close()
+    import uuid
+    link_id = str(uuid.uuid4())[:8] # Generálunk egy 8 karakteres azonosítót
 
+    # Csatlakozás a Neon adatbázishoz
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # A kérdések listáját szöveggé (JSON string) alakítjuk a mentéshez
+    kerdesek_json = json.dumps(data.extra_kerdesek)
+
+    cur.execute("""
+        INSERT INTO links (link_id, position_name, riport_gyakorisag, rejtett_leiras, extra_kerdesek)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (link_id, data.position_name, data.riport_gyakorisag, data.rejtett_leiras, kerdesek_json))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # Visszaküldjük a weblapnak a sikeres linket!
     return {
-        "message": "Link successfully generated",
-        "link": f"https://YOUR-DOMAIN.com/form/{link_id}",
-        "link_id": link_id,
-        "expires_at": expires_str,
+        "success": True, 
+        "link_id": link_id, 
+        "url": f"https://hirewise-backend-nn33.onrender.com/apply/{link_id}"
     }
-
 
 @app.post("/submit-form/{link_id}")
 def submit_form(
