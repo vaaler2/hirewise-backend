@@ -81,6 +81,7 @@ CRON_BEARER = os.getenv("CRON_BEARER", "")
    # Ezt a struktúrát várjuk a weblaptól
 class LinkRequest(BaseModel):
     position_name: str
+    company_email: str
     riport_gyakorisag: str = "Hetente"
     rejtett_leiras: Optional[str] = ""
     extra_kerdesek: Optional[List[str]] = []
@@ -182,7 +183,8 @@ def generate_link(data: LinkRequest):
         # Létrehozzuk az új sort az adatbázisban a megfelelő oszlopokkal
         new_link = Link(
             link_id=link_id,
-            profession=data.position_name,  
+            profession=data.position_name,
+            company_email=data.company_email,
             riport_gyakorisag=data.riport_gyakorisag,
             rejtett_leiras=data.rejtett_leiras,
             extra_kerdesek=json.dumps(data.extra_kerdesek)
