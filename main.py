@@ -12,6 +12,7 @@ from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi.responses import FileResponse  # <-- Új import a letöltéshez!
 
 # --- ADATBÁZIS BEÁLLÍTÁSOK ---
 from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer, Boolean
@@ -35,7 +36,6 @@ class Link(Base):
     riport_gyakorisag = Column(String)
     rejtett_leiras = Column(Text)
     extra_kerdesek = Column(Text)
-    # ÚJ OSZLOP: Mikor kapott utoljára riportot ez a link?
     last_reported_at = Column(DateTime, default=datetime.utcnow)
 
 class Application(Base):
@@ -125,6 +125,14 @@ def _evaluate_single_applicant(app_data: dict, profession: str, rejtett_leiras: 
 def health():
     return {"status": "ok"}
 
+# ÚJ VÉGPONT: Fájlok biztonságos letöltése
+@app.get("/download/{filename}")
+def download_file(filename: str):
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
+    raise HTTPException(status_code=404, detail="A fájl nem található, vagy biztonsági okokból már törlésre került.")
+
 @app.post("/generate-link")
 def generate_link(data: LinkRequest):
     link_id = str(uuid.uuid4())[:8]
@@ -137,7 +145,7 @@ def generate_link(data: LinkRequest):
             riport_gyakorisag=data.riport_gyakorisag,
             rejtett_leiras=data.rejtett_leiras,
             extra_kerdesek=json.dumps(data.extra_kerdesek),
-            last_reported_at=datetime.utcnow() # Létrehozáskor indul az óra!
+            last_reported_at=datetime.utcnow()
         )
         db.add(new_link)
         db.commit()
@@ -222,78 +230,106 @@ def send_weekly_reports(request: Request):
     now = datetime.utcnow()
     
     for link in links:
-        # --- 1. IDŐZÍTÉS LOGIKA ---
         gyakorisag = link.riport_gyakorisag.lower() if link.riport_gyakorisag else "hetente"
-        
         if "3" in gyakorisag:
             days_to_wait = 3
         elif "nap" in gyakorisag:
             days_to_wait = 1
         else:
-            days_to_wait = 7 # Alapértelmezett: Hetente
+            days_to_wait = 7
             
         last_rep = link.last_reported_at
-        # Ha valamiért üres lenne (régi adatok miatt), tekintjük úgy, hogy azonnal küldhet:
         if not last_rep:
             last_rep = now - timedelta(days=days_to_wait)
             
-        # HA MÉG NEM TELT EL A BEÁLLÍTOTT IDŐ, UGRIK A KÖVETKEZŐ CÉGRE!
         if now < last_rep + timedelta(days=days_to_wait):
             continue
             
-        # --- 2. JELENTKEZŐK LEKÉRÉSE ---
         apps = db.query(Application).filter(
             Application.link_id == link.link_id,
             Application.is_reported == False
         ).order_by(Application.score.desc()).all()
         
-        # Ha eltelt az idő, de nincs új jelentkező, akkor sem küldünk üres levelet
         if not apps:
             continue
             
-        # --- 3. E-MAIL ÖSSZEÁLLÍTÁSA ---
+        # --- ÚJ, GYÖNYÖRŰ E-MAIL DIZÁJN ---
         html_content = f"""
-        <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">HireWise AI – Friss Jelölt Riport</h2>
-            <p>Itt vannak az <b>új jelentkezők</b> a(z) <b style="color: #2563eb;">{link.profession}</b> pozícióra, alkalmassági sorrendben:</p>
-            <table border="0" cellpadding="10" cellspacing="0" style="width: 100%; border-collapse: collapse; margin-top: 20px;">
-                <tr style="background-color: #2563eb; color: white; text-align: left;">
-                    <th>Psz.</th>
-                    <th>Név / Elérhetőség</th>
-                    <th>AI Indoklás</th>
-                </tr>
+        <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 650px; margin: 0 auto; background-color: #f3f4f6; padding: 20px;">
+            <div style="text-align: center; padding-bottom: 20px;">
+                <h2 style="color: #1e3a8a; margin: 0; font-size: 24px;">HireWise AI Riport</h2>
+                <p style="color: #6b7280; font-size: 16px; margin-top: 5px;">Új jelentkezők a(z) <b>{link.profession}</b> pozícióra</p>
+            </div>
         """
         
         for a in apps:
             score_color = "#10b981" if a.score >= 70 else ("#f59e0b" if a.score >= 50 else "#ef4444")
+            
+            # Fájlnév kinyerése és link generálása
+            filename = os.path.basename(a.cv_image_path) if a.cv_image_path else ""
+            download_url = f"https://hirewise-backend-nn33.onrender.com/download/{filename}" if filename else "#"
+            
+            # Csak a jelölt saját szövegét mutatjuk, a PDF extrahált tartalma nélkül
+            display_about = a.about.split("--- DOKUMENTUM TARTALMA ---")[0].strip() if a.about else "A jelentkező nem írt bemutatkozást."
+
             html_content += f"""
-                <tr style="border-bottom: 1px solid #e5e7eb;">
-                    <td style="font-size: 20px; font-weight: bold; color: {score_color}; text-align: center;">
-                        {a.score}
-                    </td>
-                    <td style="font-size: 14px;">
-                        <b>{a.name}</b><br>
-                        <span style="color: #6b7280; font-size: 12px;">{a.email}<br>{a.phone}</span>
-                    </td>
-                    <td style="font-size: 13px; color: #4b5563;">
-                        {a.ai_evaluation}
-                    </td>
-                </tr>
+            <div style="background-color: #ffffff; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+                
+                <table width="100%" border="0" cellpadding="0" cellspacing="0" style="border-bottom: 1px solid #e5e7eb; padding-bottom: 15px; margin-bottom: 15px;">
+                    <tr>
+                        <td align="left" valign="top">
+                            <h3 style="margin: 0; color: #111827; font-size: 20px;">{a.name}</h3>
+                            <p style="margin: 5px 0 0 0; color: #6b7280; font-size: 14px;">
+                                📧 <a href="mailto:{a.email}" style="color: #2563eb; text-decoration: none;">{a.email}</a><br>
+                                📞 {a.phone}
+                            </p>
+                        </td>
+                        <td align="right" valign="top" style="width: 80px;">
+                            <div style="background-color: {score_color}; color: white; font-weight: bold; font-size: 22px; padding: 10px; border-radius: 6px; text-align: center;">
+                                {a.score}
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+                
+                <div style="margin-bottom: 15px;">
+                    <p style="margin: 0 0 5px 0; color: #374151; font-size: 13px; font-weight: bold; text-transform: uppercase;">🤖 AI Értékelés:</p>
+                    <p style="margin: 0; color: #1f2937; font-size: 15px; line-height: 1.5;">{a.ai_evaluation}</p>
+                </div>
+
+                <div style="margin-bottom: 20px; background-color: #f9fafb; padding: 15px; border-radius: 6px; border-left: 4px solid #d1d5db;">
+                    <p style="margin: 0 0 5px 0; color: #374151; font-size: 12px; font-weight: bold; text-transform: uppercase;">💬 Jelölt bemutatkozása:</p>
+                    <p style="margin: 0; color: #4b5563; font-size: 14px; font-style: italic;">"{display_about}"</p>
+                </div>
+                
+                <table width="100%" border="0" cellpadding="0" cellspacing="0">
+                    <tr>
+                        <td align="center">
+                            <a href="{download_url}" target="_blank" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: bold; font-size: 14px;">
+                                📄 Önéletrajz Megnyitása
+                            </a>
+                        </td>
+                    </tr>
+                </table>
+            </div>
             """
             a.is_reported = True
             
-        html_content += "</table></div>"
+        html_content += """
+            <div style="text-align: center; padding-top: 10px;">
+                <p style="color: #9ca3af; font-size: 12px;">Ezt az üzenetet a HireWise AI automatikusan generálta.</p>
+            </div>
+        </div>
+        """
         
         try:
             resend.Emails.send({
                 "from": "onboarding@resend.dev",
                 "to": link.company_email,
-                "subject": f"🔥 AI Rangsorolt Jelölt Riport: {link.profession}",
+                "subject": f"🎯 Új Jelentkezők - HireWise Riport: {link.profession}",
                 "html": html_content
             })
             sent_count += 1
-            
-            # KÜLDÉS UTÁN FRISSÍTJÜK AZ UTOLSÓ KIKÜLDÉS IDEJÉT!
             link.last_reported_at = now
             db.commit() 
             
@@ -303,16 +339,14 @@ def send_weekly_reports(request: Request):
             
     db.close()
     return {"ok": True, "sent_emails": sent_count}
+
+
 @app.post("/tasks/cleanup_gdpr")
 def cleanup_gdpr(request: Request):
     require_cron_bearer(request)
     db = SessionLocal()
     
-    # 60 napos határidő kiszámítása
     sixty_days_ago = datetime.utcnow() - timedelta(days=60)
-    
-    # Kikeressük azokat a linkeket, amik több mint 60 napja lettek létrehozva
-    # (Mivel a last_reported_at a létrehozáskor kap értéket, ezt használjuk bázisként)
     expired_links = db.query(Link).filter(Link.last_reported_at < sixty_days_ago).all()
     
     deleted_links_count = 0
@@ -320,23 +354,16 @@ def cleanup_gdpr(request: Request):
     deleted_files_count = 0
     
     for link in expired_links:
-        # 1. Megkeressük az összes jelentkezőt, aki erre a linkre jött
         apps = db.query(Application).filter(Application.link_id == link.link_id).all()
-        
         for app in apps:
-            # 2. Fizikai fájl (PDF/kép) törlése a szerverről
             if app.cv_image_path and os.path.exists(app.cv_image_path):
                 try:
                     os.remove(app.cv_image_path)
                     deleted_files_count += 1
                 except Exception as e:
                     print(f"Hiba a fájl törlésekor: {app.cv_image_path} - {e}")
-            
-            # 3. Jelentkező adatainak törlése az adatbázisból
             db.delete(app)
             deleted_apps_count += 1
-            
-        # 4. Magának az elavult linknek a törlése
         db.delete(link)
         deleted_links_count += 1
         
