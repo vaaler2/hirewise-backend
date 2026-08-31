@@ -243,77 +243,58 @@ def send_weekly_reports(request: Request):
         if now < last_rep + timedelta(days=days_to_wait):
             continue
             
-        # VÁLTOZÁS ITT: Behúzzuk az ÖSSZES eddigi jelentkezőt erre a pozícióra!
         all_apps = db.query(Application).filter(
             Application.link_id == link.link_id
         ).order_by(Application.score.desc()).all()
         
-        # Ellenőrizzük, hogy van-e köztük legalább egy ÚJ jelentkező
         has_new = any(not a.is_reported for a in all_apps)
         
-        # Ha egyetlen új sincs, akkor nem spammeljük a cégvezetőt!
         if not has_new or not all_apps:
             continue
             
+        # --- ÚJ KOMPAKT DIZÁJN ---
         html_content = f"""
-        <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 650px; margin: 0 auto; background-color: #f3f4f6; padding: 20px;">
+        <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 750px; margin: 0 auto; background-color: #f3f4f6; padding: 20px;">
             <div style="text-align: center; padding-bottom: 20px;">
                 <h2 style="color: #1e3a8a; margin: 0; font-size: 24px;">HireWise AI Riport</h2>
-                <p style="color: #6b7280; font-size: 16px; margin-top: 5px;">Aktuális, teljes rangsor a(z) <b>{link.profession}</b> pozícióra</p>
+                <p style="color: #6b7280; font-size: 15px; margin-top: 5px;">Aktuális, teljes rangsor a(z) <b>{link.profession}</b> pozícióra</p>
             </div>
         """
         
         for index, a in enumerate(all_apps):
             score_color = "#10b981" if a.score >= 70 else ("#f59e0b" if a.score >= 50 else "#ef4444")
-            
-            # Pici vizuális jelölés, ha ÚJ a jelentkező
-            new_badge = '<span style="background-color: #ef4444; color: white; font-size: 11px; padding: 2px 8px; border-radius: 12px; margin-left: 10px; font-weight: bold; vertical-align: middle;">ÚJ!</span>' if not a.is_reported else ''
+            new_badge = '<span style="background-color: #ef4444; color: white; font-size: 10px; padding: 2px 6px; border-radius: 8px; margin-left: 8px; font-weight: bold; vertical-align: middle;">ÚJ!</span>' if not a.is_reported else ''
             
             filename = os.path.basename(a.cv_image_path) if a.cv_image_path else ""
             download_url = f"https://hirewise-backend-nn33.onrender.com/download/{filename}" if filename else "#"
-            display_about = a.about.split("--- DOKUMENTUM TARTALMA ---")[0].strip() if a.about else "A jelentkező nem írt bemutatkozást."
 
             html_content += f"""
-            <div style="background-color: #ffffff; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                <table width="100%" border="0" cellpadding="0" cellspacing="0" style="border-bottom: 1px solid #e5e7eb; padding-bottom: 15px; margin-bottom: 15px;">
-                    <tr>
-                        <td align="left" valign="top">
-                            <h3 style="margin: 0; color: #111827; font-size: 20px;">#{index + 1} - {a.name} {new_badge}</h3>
-                            <p style="margin: 5px 0 0 0; color: #6b7280; font-size: 14px;">
-                                📧 <a href="mailto:{a.email}" style="color: #2563eb; text-decoration: none;">{a.email}</a><br>
-                                📞 {a.phone}
-                            </p>
-                        </td>
-                        <td align="right" valign="top" style="width: 80px;">
-                            <div style="background-color: {score_color}; color: white; font-weight: bold; font-size: 22px; padding: 10px; border-radius: 6px; text-align: center;">
-                                {a.score}
-                            </div>
-                        </td>
-                    </tr>
-                </table>
-                
-                <div style="margin-bottom: 15px;">
-                    <p style="margin: 0 0 5px 0; color: #374151; font-size: 13px; font-weight: bold; text-transform: uppercase;">🤖 AI Értékelés:</p>
-                    <p style="margin: 0; color: #1f2937; font-size: 15px; line-height: 1.5;">{a.ai_evaluation}</p>
-                </div>
-
-                <div style="margin-bottom: 20px; background-color: #f9fafb; padding: 15px; border-radius: 6px; border-left: 4px solid #d1d5db;">
-                    <p style="margin: 0 0 5px 0; color: #374151; font-size: 12px; font-weight: bold; text-transform: uppercase;">💬 Jelölt bemutatkozása:</p>
-                    <p style="margin: 0; color: #4b5563; font-size: 14px; font-style: italic;">"{display_about}"</p>
-                </div>
-                
+            <div style="background-color: #ffffff; border-radius: 6px; padding: 15px; margin-bottom: 12px; border-left: 5px solid {score_color}; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                 <table width="100%" border="0" cellpadding="0" cellspacing="0">
                     <tr>
-                        <td align="center">
-                            <a href="{download_url}" target="_blank" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: bold; font-size: 14px;">
-                                📄 Önéletrajz Megnyitása
+                        <td valign="top" style="width: 70px; text-align: center; padding-right: 15px;">
+                            <div style="font-size: 11px; color: #9ca3af; font-weight: bold; text-transform: uppercase;">#{index + 1}</div>
+                            <div style="color: {score_color}; font-weight: bold; font-size: 22px; margin-top: 4px;">{a.score}</div>
+                            <div style="font-size: 11px; color: #6b7280; margin-top: 2px;">/ 100</div>
+                        </td>
+                        <td valign="top" style="padding-right: 15px;">
+                            <h3 style="margin: 0 0 4px 0; color: #111827; font-size: 16px;">{a.name} {new_badge}</h3>
+                            <p style="margin: 0 0 8px 0; color: #6b7280; font-size: 12px;">
+                                <a href="mailto:{a.email}" style="color: #2563eb; text-decoration: none;">{a.email}</a> • {a.phone}
+                            </p>
+                            <p style="margin: 0; color: #4b5563; font-size: 13px; line-height: 1.4;">
+                                {a.ai_evaluation}
+                            </p>
+                        </td>
+                        <td valign="middle" style="width: 100px; text-align: right;">
+                            <a href="{download_url}" target="_blank" style="display: inline-block; background-color: #f3f4f6; color: #374151; text-decoration: none; padding: 8px 10px; border-radius: 4px; font-weight: bold; font-size: 11px; border: 1px solid #d1d5db; white-space: nowrap;">
+                                📄 Önéletrajz
                             </a>
                         </td>
                     </tr>
                 </table>
             </div>
             """
-            # Mindet megjelöljük "elküldöttnek", hogy legközelebb tudjuk, nem újak.
             a.is_reported = True
             
         html_content += """
