@@ -12,7 +12,7 @@ from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from fastapi.responses import FileResponse  # <-- Új import a letöltéshez!
+from fastapi.responses import FileResponse
 
 # --- ADATBÁZIS BEÁLLÍTÁSOK ---
 from sqlalchemy import create_engine, Column, String, DateTime, Text, Integer, Boolean
@@ -118,14 +118,12 @@ def _evaluate_single_applicant(app_data: dict, profession: str, rejtett_leiras: 
         print(f"AI értékelési hiba: {e}")
         return 0, "Hiba az AI értékelés során."
 
-
 # ---------- ENDPOINTOK ----------
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ÚJ VÉGPONT: Fájlok biztonságos letöltése
 @app.get("/download/{filename}")
 def download_file(filename: str):
     file_path = os.path.join(UPLOAD_DIR, filename)
@@ -245,40 +243,42 @@ def send_weekly_reports(request: Request):
         if now < last_rep + timedelta(days=days_to_wait):
             continue
             
-        apps = db.query(Application).filter(
-            Application.link_id == link.link_id,
-            Application.is_reported == False
+        # VÁLTOZÁS ITT: Behúzzuk az ÖSSZES eddigi jelentkezőt erre a pozícióra!
+        all_apps = db.query(Application).filter(
+            Application.link_id == link.link_id
         ).order_by(Application.score.desc()).all()
         
-        if not apps:
+        # Ellenőrizzük, hogy van-e köztük legalább egy ÚJ jelentkező
+        has_new = any(not a.is_reported for a in all_apps)
+        
+        # Ha egyetlen új sincs, akkor nem spammeljük a cégvezetőt!
+        if not has_new or not all_apps:
             continue
             
-        # --- ÚJ, GYÖNYÖRŰ E-MAIL DIZÁJN ---
         html_content = f"""
         <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 650px; margin: 0 auto; background-color: #f3f4f6; padding: 20px;">
             <div style="text-align: center; padding-bottom: 20px;">
                 <h2 style="color: #1e3a8a; margin: 0; font-size: 24px;">HireWise AI Riport</h2>
-                <p style="color: #6b7280; font-size: 16px; margin-top: 5px;">Új jelentkezők a(z) <b>{link.profession}</b> pozícióra</p>
+                <p style="color: #6b7280; font-size: 16px; margin-top: 5px;">Aktuális, teljes rangsor a(z) <b>{link.profession}</b> pozícióra</p>
             </div>
         """
         
-        for a in apps:
+        for index, a in enumerate(all_apps):
             score_color = "#10b981" if a.score >= 70 else ("#f59e0b" if a.score >= 50 else "#ef4444")
             
-            # Fájlnév kinyerése és link generálása
+            # Pici vizuális jelölés, ha ÚJ a jelentkező
+            new_badge = '<span style="background-color: #ef4444; color: white; font-size: 11px; padding: 2px 8px; border-radius: 12px; margin-left: 10px; font-weight: bold; vertical-align: middle;">ÚJ!</span>' if not a.is_reported else ''
+            
             filename = os.path.basename(a.cv_image_path) if a.cv_image_path else ""
             download_url = f"https://hirewise-backend-nn33.onrender.com/download/{filename}" if filename else "#"
-            
-            # Csak a jelölt saját szövegét mutatjuk, a PDF extrahált tartalma nélkül
             display_about = a.about.split("--- DOKUMENTUM TARTALMA ---")[0].strip() if a.about else "A jelentkező nem írt bemutatkozást."
 
             html_content += f"""
             <div style="background-color: #ffffff; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                
                 <table width="100%" border="0" cellpadding="0" cellspacing="0" style="border-bottom: 1px solid #e5e7eb; padding-bottom: 15px; margin-bottom: 15px;">
                     <tr>
                         <td align="left" valign="top">
-                            <h3 style="margin: 0; color: #111827; font-size: 20px;">{a.name}</h3>
+                            <h3 style="margin: 0; color: #111827; font-size: 20px;">#{index + 1} - {a.name} {new_badge}</h3>
                             <p style="margin: 5px 0 0 0; color: #6b7280; font-size: 14px;">
                                 📧 <a href="mailto:{a.email}" style="color: #2563eb; text-decoration: none;">{a.email}</a><br>
                                 📞 {a.phone}
@@ -313,6 +313,7 @@ def send_weekly_reports(request: Request):
                 </table>
             </div>
             """
+            # Mindet megjelöljük "elküldöttnek", hogy legközelebb tudjuk, nem újak.
             a.is_reported = True
             
         html_content += """
@@ -326,7 +327,7 @@ def send_weekly_reports(request: Request):
             resend.Emails.send({
                 "from": "onboarding@resend.dev",
                 "to": link.company_email,
-                "subject": f"🎯 Új Jelentkezők - HireWise Riport: {link.profession}",
+                "subject": f"🏆 Aktuális Jelölt Ranglista: {link.profession}",
                 "html": html_content
             })
             sent_count += 1
@@ -339,7 +340,6 @@ def send_weekly_reports(request: Request):
             
     db.close()
     return {"ok": True, "sent_emails": sent_count}
-
 
 @app.post("/tasks/cleanup_gdpr")
 def cleanup_gdpr(request: Request):
