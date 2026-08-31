@@ -303,3 +303,50 @@ def send_weekly_reports(request: Request):
             
     db.close()
     return {"ok": True, "sent_emails": sent_count}
+@app.post("/tasks/cleanup_gdpr")
+def cleanup_gdpr(request: Request):
+    require_cron_bearer(request)
+    db = SessionLocal()
+    
+    # 60 napos határidő kiszámítása
+    sixty_days_ago = datetime.utcnow() - timedelta(days=60)
+    
+    # Kikeressük azokat a linkeket, amik több mint 60 napja lettek létrehozva
+    # (Mivel a last_reported_at a létrehozáskor kap értéket, ezt használjuk bázisként)
+    expired_links = db.query(Link).filter(Link.last_reported_at < sixty_days_ago).all()
+    
+    deleted_links_count = 0
+    deleted_apps_count = 0
+    deleted_files_count = 0
+    
+    for link in expired_links:
+        # 1. Megkeressük az összes jelentkezőt, aki erre a linkre jött
+        apps = db.query(Application).filter(Application.link_id == link.link_id).all()
+        
+        for app in apps:
+            # 2. Fizikai fájl (PDF/kép) törlése a szerverről
+            if app.cv_image_path and os.path.exists(app.cv_image_path):
+                try:
+                    os.remove(app.cv_image_path)
+                    deleted_files_count += 1
+                except Exception as e:
+                    print(f"Hiba a fájl törlésekor: {app.cv_image_path} - {e}")
+            
+            # 3. Jelentkező adatainak törlése az adatbázisból
+            db.delete(app)
+            deleted_apps_count += 1
+            
+        # 4. Magának az elavult linknek a törlése
+        db.delete(link)
+        deleted_links_count += 1
+        
+    db.commit()
+    db.close()
+    
+    return {
+        "ok": True, 
+        "message": "GDPR Tisztítás sikeresen lefutott!",
+        "deleted_links": deleted_links_count,
+        "deleted_applications": deleted_apps_count,
+        "deleted_files_count": deleted_files_count
+    }
