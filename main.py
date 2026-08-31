@@ -6,7 +6,7 @@ import io
 import base64
 from openai import OpenAI
 from pypdf import PdfReader
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
@@ -35,6 +35,8 @@ class Link(Base):
     riport_gyakorisag = Column(String)
     rejtett_leiras = Column(Text)
     extra_kerdesek = Column(Text)
+    # ÚJ OSZLOP: Mikor kapott utoljára riportot ez a link?
+    last_reported_at = Column(DateTime, default=datetime.utcnow)
 
 class Application(Base):
     __tablename__ = "applications"
@@ -46,7 +48,6 @@ class Application(Base):
     about = Column(Text)
     cv_image_path = Column(String)
     submitted_at = Column(DateTime)
-    # ÚJ OSZLOPOK AZ AI ÉS A RIPORT SZÁMÁRA:
     score = Column(Integer, default=0)
     ai_evaluation = Column(Text, default="")
     is_reported = Column(Boolean, default=False)
@@ -83,7 +84,6 @@ def require_cron_bearer(req: Request):
     if not CRON_BEARER or token != CRON_BEARER.strip():
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-# --- ÚJ AI MOTOR: Egyetlen jelentkezőt értékel azonnal! ---
 def _evaluate_single_applicant(app_data: dict, profession: str, rejtett_leiras: str):
     if openai_client is None:
         return 0, "AI nem elérhető, helyi mentés történt."
@@ -136,7 +136,8 @@ def generate_link(data: LinkRequest):
             company_email=data.company_email,
             riport_gyakorisag=data.riport_gyakorisag,
             rejtett_leiras=data.rejtett_leiras,
-            extra_kerdesek=json.dumps(data.extra_kerdesek)
+            extra_kerdesek=json.dumps(data.extra_kerdesek),
+            last_reported_at=datetime.utcnow() # Létrehozáskor indul az óra!
         )
         db.add(new_link)
         db.commit()
@@ -186,7 +187,6 @@ def submit_form(
     if cv_text.strip():
         final_about += f"\n\n--- DOKUMENTUM TARTALMA ---\n{cv_text.strip()}"
 
-    # AZONNALI AI ÉRTÉKELÉS BEKÖTÉSE!
     score, ai_eval = _evaluate_single_applicant(
         {"name": name, "about": final_about},
         link_record.profession,
@@ -203,7 +203,7 @@ def submit_form(
         submitted_at=datetime.utcnow(),
         score=score,
         ai_evaluation=ai_eval,
-        is_reported=False  # Még nem küldtük el riportban
+        is_reported=False
     )
     db.add(new_app)
     db.commit()
@@ -219,16 +219,39 @@ def send_weekly_reports(request: Request):
     links = db.query(Link).all()
     
     sent_count = 0
+    now = datetime.utcnow()
+    
     for link in links:
-        # CSAK AZOKAT KÉRJÜK LE, AKIKET MÉG NEM JELENTETTÜNK (is_reported == False), ÉS RENDEZZÜK PONTSZÁM SZERINT (DESC)!
+        # --- 1. IDŐZÍTÉS LOGIKA ---
+        gyakorisag = link.riport_gyakorisag.lower() if link.riport_gyakorisag else "hetente"
+        
+        if "3" in gyakorisag:
+            days_to_wait = 3
+        elif "nap" in gyakorisag:
+            days_to_wait = 1
+        else:
+            days_to_wait = 7 # Alapértelmezett: Hetente
+            
+        last_rep = link.last_reported_at
+        # Ha valamiért üres lenne (régi adatok miatt), tekintjük úgy, hogy azonnal küldhet:
+        if not last_rep:
+            last_rep = now - timedelta(days=days_to_wait)
+            
+        # HA MÉG NEM TELT EL A BEÁLLÍTOTT IDŐ, UGRIK A KÖVETKEZŐ CÉGRE!
+        if now < last_rep + timedelta(days=days_to_wait):
+            continue
+            
+        # --- 2. JELENTKEZŐK LEKÉRÉSE ---
         apps = db.query(Application).filter(
             Application.link_id == link.link_id,
             Application.is_reported == False
         ).order_by(Application.score.desc()).all()
         
+        # Ha eltelt az idő, de nincs új jelentkező, akkor sem küldünk üres levelet
         if not apps:
             continue
             
+        # --- 3. E-MAIL ÖSSZEÁLLÍTÁSA ---
         html_content = f"""
         <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
             <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">HireWise AI – Friss Jelölt Riport</h2>
@@ -257,7 +280,6 @@ def send_weekly_reports(request: Request):
                     </td>
                 </tr>
             """
-            # Pipáljuk ki, hogy el lett küldve!
             a.is_reported = True
             
         html_content += "</table></div>"
@@ -270,7 +292,11 @@ def send_weekly_reports(request: Request):
                 "html": html_content
             })
             sent_count += 1
-            db.commit()  # Mentsük el a státusz változást
+            
+            # KÜLDÉS UTÁN FRISSÍTJÜK AZ UTOLSÓ KIKÜLDÉS IDEJÉT!
+            link.last_reported_at = now
+            db.commit() 
+            
         except Exception as e:
             db.rollback()
             print(f"Hiba küldéskor: {e}")
