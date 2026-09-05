@@ -135,6 +135,8 @@ def download_file(filename: str):
 def generate_link(data: LinkRequest):
     link_id = str(uuid.uuid4())[:8]
     db = SessionLocal()
+    apply_url = f"https://hirewise-ai.bolt.host/apply/{link_id}"
+    
     try:
         new_link = Link(
             link_id=link_id,
@@ -147,13 +149,46 @@ def generate_link(data: LinkRequest):
         )
         db.add(new_link)
         db.commit()
+        
+        # --- ÚJ: Megerősítő e-mail küldése az ügyfélnek ---
+        html_content = f"""
+        <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #f3f4f6; padding: 20px;">
+            <div style="background-color: #ffffff; border-radius: 8px; padding: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center;">
+                <h2 style="color: #1e3a8a; margin-top: 0;">Sikeresen létrehoztad a pozíciót! 🎉</h2>
+                <p style="color: #4b5563; font-size: 16px;">A(z) <b>{data.position_name}</b> pozícióhoz tartozó jelentkezési űrlapod elkészült és éles.</p>
+                
+                <p style="color: #6b7280; font-size: 14px; margin-bottom: 25px;">Oszd meg ezt a linket a hirdetéseidben (Facebook, Profession, stb.), hogy a jelentkezők be tudják küldeni az önéletrajzukat:</p>
+                
+                <a href="{apply_url}" target="_blank" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 6px; font-weight: bold; font-size: 16px; margin-bottom: 20px;">
+                    🔗 Jelentkezési Űrlap Megnyitása
+                </a>
+                
+                <p style="color: #6b7280; font-size: 13px; word-break: break-all;">Vagy másold ki a linket:<br><a href="{apply_url}" style="color: #2563eb;">{apply_url}</a></p>
+                
+                <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
+                
+                <p style="color: #9ca3af; font-size: 12px; margin: 0;">A rangsorolt jelentkezőket ide fogjuk küldeni: <b>{data.company_email}</b> ({data.riport_gyakorisag} gyakorisággal).</p>
+            </div>
+        </div>
+        """
+        
+        try:
+            resend.Emails.send({
+                "from": "onboarding@resend.dev",
+                "to": data.company_email,
+                "subject": f"🚀 A HireWise AI linked elkészült: {data.position_name}",
+                "html": html_content
+            })
+        except Exception as email_err:
+            print(f"Hiba a megerősítő e-mail küldésekor: {email_err}")
+            
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
-    return {"success": True, "link_id": link_id, "url": f"https://hirewise-ai.bolt.host/apply/{link_id}"}
-
+        
+    return {"success": True, "link_id": link_id, "url": apply_url}
 
 @app.post("/submit-form/{link_id}")
 def submit_form(
